@@ -610,6 +610,23 @@ private template optionValidator(A...)
     alias optionValidator = message;
 }
 
+private void handleConversion(R)(string option, string value, R* receiver,
+        size_t idx, string file = __FILE__, size_t line = __LINE__)
+{
+    import std.conv : to, ConvException;
+    import std.format : format;
+    try
+    {
+        *receiver = to!(typeof(*receiver))(value);
+    }
+    catch (ConvException e)
+    {
+        throw new ConvException(format("Argument '%s' at position '%u' could "
+            ~ "not be converted to type '%s' as required by option '%s'.",
+            value, idx, R.stringof, option), e, file, line);
+    }
+}
+
 @safe pure unittest
 {
     alias P = void*;
@@ -685,6 +702,7 @@ private void getoptImpl(T...)(ref string[] args, ref configuration cfg,
 
     import std.algorithm.mutation : remove;
     import std.conv : to;
+    import std.uni : toLower;
     static if (opts.length)
     {
         static if (is(typeof(opts[0]) : config))
@@ -708,7 +726,10 @@ private void getoptImpl(T...)(ref string[] args, ref configuration cfg,
 
             if (optionHelp.optLong.length)
             {
-                assert(optionHelp.optLong !in visitedLongOpts,
+                auto name = optionHelp.optLong;
+                if (!cfg.caseSensitive)
+                    name = name.toLower();
+                assert(name !in visitedLongOpts,
                     "Long option " ~ optionHelp.optLong ~ " is multiply defined");
 
                 visitedLongOpts[optionHelp.optLong] = [];
@@ -716,7 +737,10 @@ private void getoptImpl(T...)(ref string[] args, ref configuration cfg,
 
             if (optionHelp.optShort.length)
             {
-                assert(optionHelp.optShort !in visitedShortOpts,
+                auto name = optionHelp.optShort;
+                if (!cfg.caseSensitive)
+                    name = name.toLower();
+                assert(name !in visitedShortOpts,
                     "Short option " ~ optionHelp.optShort
                     ~ " is multiply defined");
 
@@ -857,7 +881,7 @@ private bool handleOption(R)(string option, R receiver, ref string[] args,
             if (val.length)
             {
                 // parse '--b=true/false'
-                *receiver = to!(typeof(*receiver))(val);
+                handleConversion(option, val, receiver, i);
             }
             else
             {
@@ -881,15 +905,22 @@ private bool handleOption(R)(string option, R receiver, ref string[] args,
                 val = args[i];
                 args = args[0 .. i] ~ args[i + 1 .. $];
             }
-            static if (is(typeof(*receiver) == enum))
+            static if (is(typeof(*receiver) == enum) ||
+                is(typeof(*receiver) == string))
             {
-                *receiver = to!(typeof(*receiver))(val);
+                handleConversion(option, val, receiver, i);
             }
             else static if (is(typeof(*receiver) : real))
             {
                 // numeric receiver
-                if (incremental) ++*receiver;
-                else *receiver = to!(typeof(*receiver))(val);
+                if (incremental)
+                {
+                    ++*receiver;
+                }
+                else
+                {
+                    handleConversion(option, val, receiver, i);
+                }
             }
             else static if (is(typeof(*receiver) == string))
             {
@@ -929,12 +960,18 @@ private bool handleOption(R)(string option, R receiver, ref string[] args,
 
                 if (arraySep == "")
                 {
-                    *receiver ~= to!E(val);
+                    E tmp;
+                    handleConversion(option, val, &tmp, i);
+                    *receiver ~= tmp;
                 }
                 else
                 {
-                    foreach (elem; val.splitter(arraySep).map!(a => to!E(a))())
-                        *receiver ~= elem;
+                    foreach (elem; val.splitter(arraySep))
+                    {
+                        E tmp;
+                        handleConversion(option, elem, &tmp, i);
+                        *receiver ~= tmp;
+                    }
                 }
             }
             else static if (isAssociativeArray!(typeof(*receiver)))
@@ -954,7 +991,14 @@ private bool handleOption(R)(string option, R receiver, ref string[] args,
                         ~ to!string(assignChar) ~ "' in argument '" ~ input ~ "'.");
                     auto key = input[0 .. j];
                     auto value = input[j + 1 .. $];
-                    return tuple(to!K(key), to!V(value));
+
+                    K k;
+                    handleConversion("", key, &k, 0);
+
+                    V v;
+                    handleConversion("", value, &v, 0);
+
+                    return tuple(k,v);
                 }
 
                 static void setHash(Range)(R receiver, Range range)
@@ -1779,6 +1823,14 @@ void defaultGetoptFormatter(Output)(Output output, string text, Option[] opt, st
     assertThrown!AssertError(getopt(args, "abc", &abc, "abc", &abc));
     assertThrown!AssertError(getopt(args, "abc|a", &abc, "def|a", &def));
     assertNotThrown!AssertError(getopt(args, "abc", &abc, "def", &def));
+
+    // https://issues.dlang.org/show_bug.cgi?id=23940
+    assertThrown!AssertError(getopt(args,
+            "abc", &abc, "ABC", &def));
+    assertThrown!AssertError(getopt(args, config.caseInsensitive,
+            "abc", &abc, "ABC", &def));
+    assertNotThrown!AssertError(getopt(args, config.caseSensitive,
+            "abc", &abc, "ABC", &def));
 }
 
 // https://issues.dlang.org/show_bug.cgi?id=17327 repeated option use
@@ -1930,4 +1982,60 @@ void defaultGetoptFormatter(Output)(Output output, string text, Option[] opt, st
     string wanted = "Some Text\n\t\t-f  --foo \nHelp\n\t\t-h --help \nThis help "
         ~ "information.\n";
     assert(wanted == helpMsg);
+}
+
+
+@safe unittest
+{
+    import std.conv : ConvException;
+    import std.string : indexOf;
+
+    enum UniqueIdentifer {
+        a,
+        b
+    }
+
+    UniqueIdentifer a;
+
+    auto args = ["prog", "--foo", "HELLO"];
+    try
+    {
+        auto t = getopt(args, "foo|f", &a);
+        assert(false, "Must not be reached, as \"HELLO\" cannot be converted"
+            ~ " to enum A.");
+    }
+    catch (ConvException e)
+    {
+        string str = () @trusted { return e.toString(); }();
+        assert(str.indexOf("HELLO") != -1);
+        assert(str.indexOf("UniqueIdentifer") != -1);
+        assert(str.indexOf("foo") != -1);
+    }
+}
+
+@safe unittest
+{
+    import std.conv : ConvException;
+    import std.string : indexOf;
+
+    int a;
+
+    auto args = ["prog", "--foo", "HELLO"];
+    try
+    {
+        auto t = getopt(args, "foo|f", &a);
+        assert(false, "Must not be reached, as \"HELLO\" cannot be converted"
+            ~ " to an int");
+    }
+    catch (ConvException e)
+    {
+        string str = () @trusted { return e.toString(); }();
+        assert(str.indexOf("HELLO") != -1);
+        assert(str.indexOf("int") != -1);
+        assert(str.indexOf("foo") != -1);
+    }
+
+    args = ["prog", "--foo", "1337"];
+    getopt(args, "foo|f", &a);
+    assert(a == 1337);
 }

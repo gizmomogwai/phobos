@@ -39,7 +39,8 @@ static import core.stdc.math;
 
 version (DigitalMars)
 {
-    version = INLINE_YL2X;        // x87 has opcodes for these
+    version (OSX) { }             // macOS 13 (M1) has issues emulating instruction
+    else version = INLINE_YL2X;   // x87 has opcodes for these
 }
 
 version (D_InlineAsm_X86)    version = InlineAsm_X86_Any;
@@ -255,7 +256,7 @@ if (isFloatingPoint!(F) && isIntegral!(G))
  *     If x is 0 and n is negative, the result is the same as the result of a
  *     division by zero.
  */
-typeof(Unqual!(F).init * Unqual!(G).init) pow(F, G)(F x, G n) @nogc @trusted pure nothrow
+typeof(Unqual!(F).init * Unqual!(G).init) pow(F, G)(F x, G n) @nogc @safe pure nothrow
 if (isIntegral!(F) && isIntegral!(G))
 {
     import std.traits : isSigned;
@@ -421,217 +422,7 @@ if (isIntegral!I && isFloatingPoint!F)
 Unqual!(Largest!(F, G)) pow(F, G)(F x, G y) @nogc @trusted pure nothrow
 if (isFloatingPoint!(F) && isFloatingPoint!(G))
 {
-    import core.math : fabs, sqrt;
-    import std.math.traits : isInfinity, isNaN, signbit;
-
-    alias Float = typeof(return);
-
-    static real impl(real x, real y) @nogc pure nothrow
-    {
-        // Special cases.
-        if (isNaN(y))
-            return y;
-        if (isNaN(x) && y != 0.0)
-            return x;
-
-        // Even if x is NaN.
-        if (y == 0.0)
-            return 1.0;
-        if (y == 1.0)
-            return x;
-
-        if (isInfinity(y))
-        {
-            if (isInfinity(x))
-            {
-                if (!signbit(y) && !signbit(x))
-                    return F.infinity;
-                else
-                    return F.nan;
-            }
-            else if (fabs(x) > 1)
-            {
-                if (signbit(y))
-                    return +0.0;
-                else
-                    return F.infinity;
-            }
-            else if (fabs(x) == 1)
-            {
-                return F.nan;
-            }
-            else // < 1
-            {
-                if (signbit(y))
-                    return F.infinity;
-                else
-                    return +0.0;
-            }
-        }
-        if (isInfinity(x))
-        {
-            if (signbit(x))
-            {
-                long i = cast(long) y;
-                if (y > 0.0)
-                {
-                    if (i == y && i & 1)
-                        return -F.infinity;
-                    else if (i == y)
-                        return F.infinity;
-                    else
-                        return -F.nan;
-                }
-                else if (y < 0.0)
-                {
-                    if (i == y && i & 1)
-                        return -0.0;
-                    else if (i == y)
-                        return +0.0;
-                    else
-                        return F.nan;
-                }
-            }
-            else
-            {
-                if (y > 0.0)
-                    return F.infinity;
-                else if (y < 0.0)
-                    return +0.0;
-            }
-        }
-
-        if (x == 0.0)
-        {
-            if (signbit(x))
-            {
-                long i = cast(long) y;
-                if (y > 0.0)
-                {
-                    if (i == y && i & 1)
-                        return -0.0;
-                    else
-                        return +0.0;
-                }
-                else if (y < 0.0)
-                {
-                    if (i == y && i & 1)
-                        return -F.infinity;
-                    else
-                        return F.infinity;
-                }
-            }
-            else
-            {
-                if (y > 0.0)
-                    return +0.0;
-                else if (y < 0.0)
-                    return F.infinity;
-            }
-        }
-        if (x == 1.0)
-            return 1.0;
-
-        if (y >= F.max)
-        {
-            if ((x > 0.0 && x < 1.0) || (x > -1.0 && x < 0.0))
-                return 0.0;
-            if (x > 1.0 || x < -1.0)
-                return F.infinity;
-        }
-        if (y <= -F.max)
-        {
-            if ((x > 0.0 && x < 1.0) || (x > -1.0 && x < 0.0))
-                return F.infinity;
-            if (x > 1.0 || x < -1.0)
-                return 0.0;
-        }
-
-        if (x >= F.max)
-        {
-            if (y > 0.0)
-                return F.infinity;
-            else
-                return 0.0;
-        }
-        if (x <= -F.max)
-        {
-            long i = cast(long) y;
-            if (y > 0.0)
-            {
-                if (i == y && i & 1)
-                    return -F.infinity;
-                else
-                    return F.infinity;
-            }
-            else if (y < 0.0)
-            {
-                if (i == y && i & 1)
-                    return -0.0;
-                else
-                    return +0.0;
-            }
-        }
-
-        // Integer power of x.
-        long iy = cast(long) y;
-        if (iy == y && fabs(y) < 32_768.0)
-            return pow(x, iy);
-
-        real sign = 1.0;
-        if (x < 0)
-        {
-            // Result is real only if y is an integer
-            // Check for a non-zero fractional part
-            enum maxOdd = pow(2.0L, real.mant_dig) - 1.0L;
-            static if (maxOdd > ulong.max)
-            {
-                // Generic method, for any FP type
-                import std.math.rounding : floor;
-                if (floor(y) != y)
-                    return sqrt(x); // Complex result -- create a NaN
-
-                const hy = 0.5 * y;
-                if (floor(hy) != hy)
-                    sign = -1.0;
-            }
-            else
-            {
-                // Much faster, if ulong has enough precision
-                const absY = fabs(y);
-                if (absY <= maxOdd)
-                {
-                    const uy = cast(ulong) absY;
-                    if (uy != absY)
-                        return sqrt(x); // Complex result -- create a NaN
-
-                    if (uy & 1)
-                        sign = -1.0;
-                }
-            }
-            x = -x;
-        }
-        version (INLINE_YL2X)
-        {
-            // If x > 0, x ^^ y == 2 ^^ ( y * log2(x) )
-            // TODO: This is not accurate in practice. A fast and accurate
-            // (though complicated) method is described in:
-            // "An efficient rounding boundary test for pow(x, y)
-            // in double precision", C.Q. Lauter and V. Lefèvre, INRIA (2007).
-            return sign * exp2( core.math.yl2x(x, y) );
-        }
-        else
-        {
-            // If x > 0, x ^^ y == 2 ^^ ( y * log2(x) )
-            // TODO: This is not accurate in practice. A fast and accurate
-            // (though complicated) method is described in:
-            // "An efficient rounding boundary test for pow(x, y)
-            // in double precision", C.Q. Lauter and V. Lefèvre, INRIA (2007).
-            Float w = exp2(y * log2(x));
-            return sign * w;
-        }
-    }
-    return impl(x, y);
+    return _powImpl(x, y);
 }
 
 ///
@@ -799,6 +590,216 @@ if (isFloatingPoint!(F) && isFloatingPoint!(G))
     assert(isNaN(pow(-real.infinity, 1.234)));
     assert(isNaN(pow(-real.infinity, -0.751)));
     assert(pow(-real.infinity, 0.0) == 1.0);
+}
+
+private real _powImpl(real x, real y) @safe @nogc pure nothrow
+{
+    alias F = real;
+    import core.math : fabs, sqrt;
+    import std.math.traits : isInfinity, isNaN, signbit;
+
+    // Special cases.
+    if (isNaN(y))
+        return y;
+    if (isNaN(x) && y != 0.0)
+        return x;
+
+    // Even if x is NaN.
+    if (y == 0.0)
+        return 1.0;
+    if (y == 1.0)
+        return x;
+
+    if (isInfinity(y))
+    {
+        if (isInfinity(x))
+        {
+            if (!signbit(y) && !signbit(x))
+                return F.infinity;
+            else
+                return F.nan;
+        }
+        else if (fabs(x) > 1)
+        {
+            if (signbit(y))
+                return +0.0;
+            else
+                return F.infinity;
+        }
+        else if (fabs(x) == 1)
+        {
+            return F.nan;
+        }
+        else // < 1
+        {
+            if (signbit(y))
+                return F.infinity;
+            else
+                return +0.0;
+        }
+    }
+    if (isInfinity(x))
+    {
+        if (signbit(x))
+        {
+            long i = cast(long) y;
+            if (y > 0.0)
+            {
+                if (i == y && i & 1)
+                    return -F.infinity;
+                else if (i == y)
+                    return F.infinity;
+                else
+                    return -F.nan;
+            }
+            else if (y < 0.0)
+            {
+                if (i == y && i & 1)
+                    return -0.0;
+                else if (i == y)
+                    return +0.0;
+                else
+                    return F.nan;
+            }
+        }
+        else
+        {
+            if (y > 0.0)
+                return F.infinity;
+            else if (y < 0.0)
+                return +0.0;
+        }
+    }
+
+    if (x == 0.0)
+    {
+        if (signbit(x))
+        {
+            long i = cast(long) y;
+            if (y > 0.0)
+            {
+                if (i == y && i & 1)
+                    return -0.0;
+                else
+                    return +0.0;
+            }
+            else if (y < 0.0)
+            {
+                if (i == y && i & 1)
+                    return -F.infinity;
+                else
+                    return F.infinity;
+            }
+        }
+        else
+        {
+            if (y > 0.0)
+                return +0.0;
+            else if (y < 0.0)
+                return F.infinity;
+        }
+    }
+    if (x == 1.0)
+        return 1.0;
+
+    if (y >= F.max)
+    {
+        if ((x > 0.0 && x < 1.0) || (x > -1.0 && x < 0.0))
+            return 0.0;
+        if (x > 1.0 || x < -1.0)
+            return F.infinity;
+    }
+    if (y <= -F.max)
+    {
+        if ((x > 0.0 && x < 1.0) || (x > -1.0 && x < 0.0))
+            return F.infinity;
+        if (x > 1.0 || x < -1.0)
+            return 0.0;
+    }
+
+    if (x >= F.max)
+    {
+        if (y > 0.0)
+            return F.infinity;
+        else
+            return 0.0;
+    }
+    if (x <= -F.max)
+    {
+        long i = cast(long) y;
+        if (y > 0.0)
+        {
+            if (i == y && i & 1)
+                return -F.infinity;
+            else
+                return F.infinity;
+        }
+        else if (y < 0.0)
+        {
+            if (i == y && i & 1)
+                return -0.0;
+            else
+                return +0.0;
+        }
+    }
+
+    // Integer power of x.
+    long iy = cast(long) y;
+    if (iy == y && fabs(y) < 32_768.0)
+        return pow(x, iy);
+
+    real sign = 1.0;
+    if (x < 0)
+    {
+        // Result is real only if y is an integer
+        // Check for a non-zero fractional part
+        enum maxOdd = pow(2.0L, real.mant_dig) - 1.0L;
+        static if (maxOdd > ulong.max)
+        {
+            // Generic method, for any FP type
+            import std.math.rounding : floor;
+            if (floor(y) != y)
+                return sqrt(x); // Complex result -- create a NaN
+
+            const hy = 0.5 * y;
+            if (floor(hy) != hy)
+                sign = -1.0;
+        }
+        else
+        {
+            // Much faster, if ulong has enough precision
+            const absY = fabs(y);
+            if (absY <= maxOdd)
+            {
+                const uy = cast(ulong) absY;
+                if (uy != absY)
+                    return sqrt(x); // Complex result -- create a NaN
+
+                if (uy & 1)
+                    sign = -1.0;
+            }
+        }
+        x = -x;
+    }
+    version (INLINE_YL2X)
+    {
+        // If x > 0, x ^^ y == 2 ^^ ( y * log2(x) )
+        // TODO: This is not accurate in practice. A fast and accurate
+        // (though complicated) method is described in:
+        // "An efficient rounding boundary test for pow(x, y)
+        // in double precision", C.Q. Lauter and V. Lefèvre, INRIA (2007).
+        return sign * exp2( core.math.yl2x(x, y) );
+    }
+    else
+    {
+        // If x > 0, x ^^ y == 2 ^^ ( y * log2(x) )
+        // TODO: This is not accurate in practice. A fast and accurate
+        // (though complicated) method is described in:
+        // "An efficient rounding boundary test for pow(x, y)
+        // in double precision", C.Q. Lauter and V. Lefèvre, INRIA (2007).
+        auto w = exp2(y * log2(x));
+        return sign * w;
+    }
 }
 
 /** Computes the value of a positive integer `x`, raised to the power `n`, modulo `m`.
@@ -1001,8 +1002,7 @@ float exp(float x) @safe pure nothrow @nogc { return __ctfe ? cast(float) exp(ca
 
 private T expImpl(T)(T x) @safe pure nothrow @nogc
 {
-    import std.math : floatTraits, RealFormat;
-    import std.math.traits : isNaN;
+    import std.math.traits : floatTraits, RealFormat, isNaN;
     import std.math.rounding : floor;
     import std.math.algebraic : poly;
     import std.math.constants : LOG2E;
@@ -1142,7 +1142,7 @@ private T expImpl(T)(T x) @safe pure nothrow @nogc
 
 @safe @nogc nothrow unittest
 {
-    import std.math : floatTraits, RealFormat;
+    import std.math.traits : floatTraits, RealFormat;
     import std.math.operations : NaN, feqrel, isClose;
     import std.math.constants : E;
     import std.math.traits : isIdentical;
@@ -1516,7 +1516,7 @@ L_largenegative:
 
 private T expm1Impl(T)(T x) @safe pure nothrow @nogc
 {
-    import std.math : floatTraits, RealFormat;
+    import std.math.traits : floatTraits, RealFormat;
     import std.math.rounding : floor;
     import std.math.algebraic : poly;
     import std.math.constants : LN2;
@@ -1908,8 +1908,7 @@ L_was_nan:
 
 private T exp2Impl(T)(T x) @nogc @safe pure nothrow
 {
-    import std.math : floatTraits, RealFormat;
-    import std.math.traits : isNaN;
+    import std.math.traits : floatTraits, RealFormat, isNaN;
     import std.math.rounding : floor;
     import std.math.algebraic : poly;
 
@@ -2097,8 +2096,7 @@ private T exp2Impl(T)(T x) @nogc @safe pure nothrow
 T frexp(T)(const T value, out int exp) @trusted pure nothrow @nogc
 if (isFloatingPoint!T)
 {
-    import std.math : floatTraits, RealFormat, MANTISSA_MSB, MANTISSA_LSB;
-    import std.math.traits : isSubnormal;
+    import std.math.traits : floatTraits, RealFormat, MANTISSA_MSB, MANTISSA_LSB, isSubnormal;
 
     if (__ctfe)
     {
@@ -2352,8 +2350,7 @@ if (isFloatingPoint!T)
 
 @safe unittest
 {
-    import std.math : floatTraits, RealFormat;
-    import std.math.traits : isIdentical;
+    import std.math.traits : floatTraits, RealFormat, isIdentical;
     import std.meta : AliasSeq;
     import std.typecons : tuple, Tuple;
 
@@ -2485,7 +2482,7 @@ if (isFloatingPoint!T)
 int ilogb(T)(const T x) @trusted pure nothrow @nogc
 if (isFloatingPoint!T)
 {
-    import std.math : floatTraits, RealFormat, MANTISSA_MSB, MANTISSA_LSB;
+    import std.math.traits : floatTraits, RealFormat, MANTISSA_MSB, MANTISSA_LSB;
 
     import core.bitop : bsr;
     alias F = floatTraits!T;
@@ -2680,7 +2677,7 @@ alias FP_ILOGBNAN = core.stdc.math.FP_ILOGBNAN;
 
 @safe nothrow @nogc unittest
 {
-    import std.math : floatTraits, RealFormat;
+    import std.math.traits : floatTraits, RealFormat;
     import std.math.operations : nextUp;
     import std.meta : AliasSeq;
     import std.typecons : Tuple;
@@ -2777,7 +2774,7 @@ float ldexp(float n, int exp)   @safe pure nothrow @nogc { return core.math.ldex
 
 @safe pure nothrow @nogc unittest
 {
-    import std.math : floatTraits, RealFormat;
+    import std.math.traits : floatTraits, RealFormat;
 
     static if (floatTraits!(real).realFormat == RealFormat.ieeeExtended ||
                floatTraits!(real).realFormat == RealFormat.ieeeExtended53 ||
@@ -2862,10 +2859,10 @@ float ldexp(float n, int exp)   @safe pure nothrow @nogc { return core.math.ldex
 
 private
 {
-    // Coefficients shared across log(), log2(), log10().
+    // Coefficients shared across log(), log2(), log10(), log1p().
     template LogCoeffs(T)
     {
-        import std.math : floatTraits, RealFormat;
+        import std.math.traits : floatTraits, RealFormat;
 
         static if (floatTraits!T.realFormat == RealFormat.ieeeQuadruple)
         {
@@ -3022,6 +3019,25 @@ private
             alias log2Q = logQ;
 
             // Coefficients for log(1 + x) = x - x^^2/2 + x^^3 P(x)/Q(x)
+            static immutable double[7] logp1P = [
+                2.0039553499201281259648E1,
+                5.7112963590585538103336E1,
+                6.0949667980987787057556E1,
+                2.9911919328553073277375E1,
+                6.5787325942061044846969E0,
+                4.9854102823193375972212E-1,
+                4.5270000862445199635215E-5,
+            ];
+            static immutable double[7] logp1Q = [
+                6.0118660497603843919306E1,
+                2.1642788614495947685003E2,
+                3.0909872225312059774938E2,
+                2.2176239823732856465394E2,
+                8.3047565967967209469434E1,
+                1.5062909083469192043167E1,
+                1.0000000000000000000000E0,
+            ];
+
             static immutable double[7] log10P = [
                 1.98892446572874072159E1,
                 5.67349287391754285487E1,
@@ -3068,6 +3084,26 @@ private
                  1.1676998740E-1,
                 -1.1514610310E-1,
                  7.0376836292E-2,
+            ];
+
+            // Coefficients for log(1 + x) = x - x^^2/2 + x^^3 P(x)/Q(x)
+            static immutable float[7] logp1P = [
+                 2.0039553499E1,
+                 5.7112963590E1,
+                 6.0949667980E1,
+                 2.9911919328E1,
+                 6.5787325942E0,
+                 4.9854102823E-1,
+                 4.5270000862E-5,
+            ];
+            static immutable float[7] logp1Q = [
+                6.01186604976E1,
+                2.16427886144E2,
+                3.09098722253E2,
+                2.21762398237E2,
+                8.30475659679E1,
+                1.50629090834E1,
+                1.00000000000E0,
             ];
 
             // log2 and log10 uses the same coefficients as log.
@@ -3135,15 +3171,20 @@ real log(ulong x) @safe pure nothrow @nogc { return log(cast(real) x); }
     assert(feqrel(log(E), 1) >= real.mant_dig - 1);
 }
 
-private T logImpl(T)(T x) @safe pure nothrow @nogc
+private T logImpl(T, bool LOG1P = false)(T x) @safe pure nothrow @nogc
 {
     import std.math.constants : SQRT1_2;
     import std.math.algebraic : poly;
-    import std.math.traits : isInfinity, isNaN, signbit;
-    import std.math : floatTraits, RealFormat;
+    import std.math.traits : isInfinity, isNaN, signbit, floatTraits, RealFormat;
 
     alias coeffs = LogCoeffs!T;
     alias F = floatTraits!T;
+
+    static if (LOG1P)
+    {
+        const T xm1 = x;
+        x = x + 1.0;
+    }
 
     static if (F.realFormat == RealFormat.ieeeExtended ||
                F.realFormat == RealFormat.ieeeExtended53 ||
@@ -3219,11 +3260,28 @@ private T logImpl(T)(T x) @safe pure nothrow @nogc
     if (x < SQRT1_2)
     {
         exp -= 1;
-        x = 2.0 * x - 1.0;
+        static if (LOG1P)
+        {
+            if (exp != 0)
+                x = 2.0 * x - 1.0;
+            else
+                x = xm1;
+        }
+        else
+            x = 2.0 * x - 1.0;
+
     }
     else
     {
-        x = x - 1.0;
+        static if (LOG1P)
+        {
+            if (exp != 0)
+                x = x - 1.0;
+            else
+                x = xm1;
+        }
+        else
+            x = x - 1.0;
     }
     z = x * x;
     static if (F.realFormat == RealFormat.ieeeSingle)
@@ -3239,6 +3297,87 @@ private T logImpl(T)(T x) @safe pure nothrow @nogc
     z += exp * C1;
 
     return z;
+}
+
+@safe @nogc nothrow unittest
+{
+    import std.math.traits : floatTraits, RealFormat;
+    import std.meta : AliasSeq;
+
+    static void testLog(T)(T[2][] vals)
+    {
+        import std.math.operations : isClose;
+        import std.math.traits : isNaN;
+        foreach (ref pair; vals)
+        {
+            if (isNaN(pair[1]))
+                assert(isNaN(log(pair[0])));
+            else
+                assert(isClose(log(pair[0]), pair[1]));
+        }
+    }
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        scope F[2][] vals = [
+            [F(1), F(0x0p+0)], [F(2), F(0x1.62e42fefa39ef358p-1)],
+            [F(4), F(0x1.62e42fefa39ef358p+0)], [F(8), F(0x1.0a2b23f3bab73682p+1)],
+            [F(16), F(0x1.62e42fefa39ef358p+1)], [F(32), F(0x1.bb9d3beb8c86b02ep+1)],
+            [F(64), F(0x1.0a2b23f3bab73682p+2)], [F(128), F(0x1.3687a9f1af2b14ecp+2)],
+            [F(256), F(0x1.62e42fefa39ef358p+2)], [F(512), F(0x1.8f40b5ed9812d1c2p+2)],
+            [F(1024), F(0x1.bb9d3beb8c86b02ep+2)], [F(2048), F(0x1.e7f9c1e980fa8e98p+2)],
+            [F(3), F(0x1.193ea7aad030a976p+0)], [F(5), F(0x1.9c041f7ed8d336bp+0)],
+            [F(7), F(0x1.f2272ae325a57546p+0)], [F(15), F(0x1.5aa16394d481f014p+1)],
+            [F(17), F(0x1.6aa6bc1fa7f79cfp+1)], [F(31), F(0x1.b78ce48912b59f12p+1)],
+            [F(33), F(0x1.bf8d8f4d5b8d1038p+1)], [F(63), F(0x1.09291e8e3181b20ep+2)],
+            [F(65), F(0x1.0b292939429755ap+2)], [F(-0), -F.infinity], [F(0), -F.infinity],
+            [F(0.1), F(-0x1.26bb1bbb5551582ep+1)], [F(0.25), F(-0x1.62e42fefa39ef358p+0)],
+            [F(0.75), F(-0x1.269621134db92784p-2)], [F(0.875), F(-0x1.1178e8227e47bde4p-3)],
+            [F(10), F(0x1.26bb1bbb5551582ep+1)], [F(100), F(0x1.26bb1bbb5551582ep+2)],
+            [F(10000), F(0x1.26bb1bbb5551582ep+3)],
+        ];
+        testLog(vals);
+    }}
+    {
+        float[2][16] vals = [
+            [float.nan, float.nan],[-float.nan, float.nan],
+            [float.infinity, float.infinity], [-float.infinity, float.nan],
+            [float.min_normal, -0x1.5d58ap+6f], [-float.min_normal, float.nan],
+            [float.max, 0x1.62e43p+6f], [-float.max, float.nan],
+            [float.min_normal / 2, -0x1.601e68p+6f], [-float.min_normal / 2, float.nan],
+            [float.max / 2, 0x1.601e68p+6f], [-float.max / 2, float.nan],
+            [float.min_normal / 3, -0x1.61bd9ap+6f], [-float.min_normal / 3, float.nan],
+            [float.max / 3, 0x1.5e7f36p+6f], [-float.max / 3, float.nan],
+        ];
+        testLog(vals);
+    }
+    {
+        double[2][16] vals = [
+            [double.nan, double.nan],[-double.nan, double.nan],
+            [double.infinity, double.infinity], [-double.infinity, double.nan],
+            [double.min_normal, -0x1.6232bdd7abcd2p+9], [-double.min_normal, double.nan],
+            [double.max, 0x1.62e42fefa39efp+9], [-double.max, double.nan],
+            [double.min_normal / 2, -0x1.628b76e3a7b61p+9], [-double.min_normal / 2, double.nan],
+            [double.max / 2, 0x1.628b76e3a7b61p+9], [-double.max / 2, double.nan],
+            [double.min_normal / 3, -0x1.62bf5d2b81354p+9], [-double.min_normal / 3, double.nan],
+            [double.max / 3, 0x1.6257909bce36ep+9], [-double.max / 3, double.nan],
+        ];
+        testLog(vals);
+    }
+    alias F = floatTraits!real;
+    static if (F.realFormat == RealFormat.ieeeExtended || F.realFormat == RealFormat.ieeeQuadruple)
+    {{
+        real[2][16] vals = [
+            [real.nan, real.nan],[-real.nan, real.nan],
+            [real.infinity, real.infinity], [-real.infinity, real.nan],
+            [real.min_normal, -0x1.62d918ce2421d66p+13L], [-real.min_normal, real.nan],
+            [real.max, 0x1.62e42fefa39ef358p+13L], [-real.max, real.nan],
+            [real.min_normal / 2, -0x1.62dea45ee3e064dcp+13L], [-real.min_normal / 2, real.nan],
+            [real.max / 2, 0x1.62dea45ee3e064dcp+13L], [-real.max / 2, real.nan],
+            [real.min_normal / 3, -0x1.62e1e2c3617857e6p+13L], [-real.min_normal / 3, real.nan],
+            [real.max / 3, 0x1.62db65fa664871d2p+13L], [-real.max / 3, real.nan],
+        ];
+        testLog(vals);
+    }}
 }
 
 /**************************************
@@ -3308,8 +3447,7 @@ private T log10Impl(T)(T x) @safe pure nothrow @nogc
 {
     import std.math.constants : SQRT1_2;
     import std.math.algebraic : poly;
-    import std.math.traits : isNaN, isInfinity, signbit;
-    import std.math : floatTraits, RealFormat;
+    import std.math.traits : isNaN, isInfinity, signbit, floatTraits, RealFormat;
 
     alias coeffs = LogCoeffs!T;
     alias F = floatTraits!T;
@@ -3412,6 +3550,86 @@ Ldone:
     return z;
 }
 
+@safe @nogc nothrow unittest
+{
+    import std.math.traits : floatTraits, RealFormat;
+    import std.meta : AliasSeq;
+
+    static void testLog10(T)(T[2][] vals)
+    {
+        import std.math.operations : isClose;
+        import std.math.traits : isNaN;
+        foreach (ref pair; vals)
+        {
+            if (isNaN(pair[1]))
+                assert(isNaN(log10(pair[0])));
+            else
+                assert(isClose(log10(pair[0]), pair[1]));
+        }
+    }
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        scope F[2][] vals = [
+            [F(1), F(0x0p+0)], [F(2), F(0x1.34413509f79fef32p-2)],
+            [F(4), F(0x1.34413509f79fef32p-1)], [F(8), F(0x1.ce61cf8ef36fe6cap-1)],
+            [F(16), F(0x1.34413509f79fef32p+0)], [F(32), F(0x1.8151824c7587eafep+0)],
+            [F(64), F(0x1.ce61cf8ef36fe6cap+0)], [F(128), F(0x1.0db90e68b8abf14cp+1)],
+            [F(256), F(0x1.34413509f79fef32p+1)], [F(512), F(0x1.5ac95bab3693ed18p+1)],
+            [F(1024), F(0x1.8151824c7587eafep+1)], [F(2048), F(0x1.a7d9a8edb47be8e4p+1)],
+            [F(3), F(0x1.e8927964fd5fd08cp-2)], [F(5), F(0x1.65df657b04300868p-1)],
+            [F(7), F(0x1.b0b0b0b78cc3f296p-1)], [F(15), F(0x1.2d145116c16ff856p+0)],
+            [F(17), F(0x1.3afeb354b7d9731ap+0)], [F(31), F(0x1.7dc9e145867e62eap+0)],
+            [F(33), F(0x1.84bd545e4baeddp+0)], [F(63), F(0x1.cca1950e4511e192p+0)],
+            [F(65), F(0x1.d01b16f9433cf7b8p+0)], [F(-0), -F.infinity], [F(0), -F.infinity],
+            [F(0.1), F(-0x1p+0)], [F(0.25), F(-0x1.34413509f79fef32p-1)],
+            [F(0.75), F(-0x1.ffbfc2bbc7803758p-4)], [F(0.875), F(-0x1.db11ed766abf432ep-5)],
+            [F(10), F(0x1p+0)], [F(100), F(0x1p+1)], [F(10000), F(0x1p+2)],
+        ];
+        testLog10(vals);
+    }}
+    {
+        float[2][16] vals = [
+            [float.nan, float.nan],[-float.nan, float.nan],
+            [float.infinity, float.infinity], [-float.infinity, float.nan],
+            [float.min_normal, -0x1.2f703p+5f], [-float.min_normal, float.nan],
+            [float.max, 0x1.344136p+5f], [-float.max, float.nan],
+            [float.min_normal / 2, -0x1.31d8b2p+5f], [-float.min_normal / 2, float.nan],
+            [float.max / 2, 0x1.31d8b2p+5f], [-float.max / 2, float.nan],
+            [float.min_normal / 3, -0x1.334156p+5f], [-float.min_normal / 3, float.nan],
+            [float.max / 3, 0x1.30701p+5f], [-float.max / 3, float.nan],
+        ];
+        testLog10(vals);
+    }
+    {
+        double[2][16] vals = [
+            [double.nan, double.nan],[-double.nan, double.nan],
+            [double.infinity, double.infinity], [-double.infinity, double.nan],
+            [double.min_normal, -0x1.33a7146f72a42p+8], [-double.min_normal, double.nan],
+            [double.max, 0x1.34413509f79ffp+8], [-double.max, double.nan],
+            [double.min_normal / 2, -0x1.33f424bcb522p+8], [-double.min_normal / 2, double.nan],
+            [double.max / 2, 0x1.33f424bcb522p+8], [-double.max / 2, double.nan],
+            [double.min_normal / 3, -0x1.3421390dcbe37p+8], [-double.min_normal / 3, double.nan],
+            [double.max / 3, 0x1.33c7106b9e609p+8], [-double.max / 3, double.nan],
+        ];
+        testLog10(vals);
+    }
+    alias F = floatTraits!real;
+    static if (F.realFormat == RealFormat.ieeeExtended || F.realFormat == RealFormat.ieeeQuadruple)
+    {{
+        real[2][16] vals = [
+            [real.nan, real.nan],[-real.nan, real.nan],
+            [real.infinity, real.infinity], [-real.infinity, real.nan],
+            [real.min_normal, -0x1.343793004f503232p+12L], [-real.min_normal, real.nan],
+            [real.max, 0x1.34413509f79fef32p+12L], [-real.max, real.nan],
+            [real.min_normal / 2, -0x1.343c6405237810b2p+12L], [-real.min_normal / 2, real.nan],
+            [real.max / 2, 0x1.343c6405237810b2p+12L], [-real.max / 2, real.nan],
+            [real.min_normal / 3, -0x1.343f354a34e427bp+12L], [-real.min_normal / 3, real.nan],
+            [real.max / 3, 0x1.343992c0120bf9b2p+12L], [-real.max / 3, real.nan],
+        ];
+        testLog10(vals);
+    }}
+}
+
 /**
  * Calculates the natural logarithm of 1 + x.
  *
@@ -3484,6 +3702,9 @@ real log1p(ulong x) @safe pure nothrow @nogc { return log1p(cast(real) x); }
 private T log1pImpl(T)(T x) @safe pure nothrow @nogc
 {
     import std.math.traits : isNaN, isInfinity, signbit;
+    import std.math.algebraic : poly;
+    import std.math.constants : SQRT1_2, SQRT2;
+    import std.math.traits : floatTraits, RealFormat;
 
     // Special cases.
     if (isNaN(x) || x == 0.0)
@@ -3495,7 +3716,107 @@ private T log1pImpl(T)(T x) @safe pure nothrow @nogc
     if (x < -1.0)
         return T.nan;
 
-    return logImpl(x + 1.0);
+    alias F = floatTraits!T;
+    static if (F.realFormat == RealFormat.ieeeSingle ||
+               F.realFormat == RealFormat.ieeeDouble)
+    {
+        // When the input is within the range 1/sqrt(2) <= x+1 <= sqrt(2), compute
+        // log1p inline. Forwarding to log() would otherwise result in inaccuracies.
+        const T xp1 = x + 1.0;
+        if (xp1 >= SQRT1_2 && xp1 <= SQRT2)
+        {
+            alias coeffs = LogCoeffs!T;
+
+            T px = poly(x, coeffs.logp1P);
+            T qx = poly(x, coeffs.logp1Q);
+            const T xx = x * x;
+            qx = x + ((cast(T) -0.5) * xx + x * (xx * px / qx));
+            return qx;
+        }
+    }
+
+    return logImpl!(T, true)(x);
+}
+
+@safe @nogc nothrow unittest
+{
+    import std.math.traits : floatTraits, RealFormat;
+    import std.meta : AliasSeq;
+
+    static void testLog1p(T)(T[2][] vals)
+    {
+        import std.math.operations : isClose;
+        import std.math.traits : isNaN;
+        foreach (ref pair; vals)
+        {
+            if (isNaN(pair[1]))
+                assert(isNaN(log1p(pair[0])));
+            else
+                assert(isClose(log1p(pair[0]), pair[1]));
+        }
+    }
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        scope F[2][] vals = [
+            [F(1), F(0x1.62e42fefa39ef358p-1)], [F(2), F(0x1.193ea7aad030a976p+0)],
+            [F(4), F(0x1.9c041f7ed8d336bp+0)], [F(8), F(0x1.193ea7aad030a976p+1)],
+            [F(16), F(0x1.6aa6bc1fa7f79cfp+1)], [F(32), F(0x1.bf8d8f4d5b8d1038p+1)],
+            [F(64), F(0x1.0b292939429755ap+2)], [F(128), F(0x1.37072a9b5b6cb31p+2)],
+            [F(256), F(0x1.63241004e9010ad8p+2)], [F(512), F(0x1.8f60adf041bde2a8p+2)],
+            [F(1024), F(0x1.bbad39ebe1cc08b6p+2)], [F(2048), F(0x1.e801c1698ba4395cp+2)],
+            [F(3), F(0x1.62e42fefa39ef358p+0)], [F(5), F(0x1.cab0bfa2a2002322p+0)],
+            [F(7), F(0x1.0a2b23f3bab73682p+1)], [F(15), F(0x1.62e42fefa39ef358p+1)],
+            [F(17), F(0x1.71f7b3a6b918664cp+1)], [F(31), F(0x1.bb9d3beb8c86b02ep+1)],
+            [F(33), F(0x1.c35fc81b90df59c6p+1)], [F(63), F(0x1.0a2b23f3bab73682p+2)],
+            [F(65), F(0x1.0c234da4a23a6686p+2)], [F(-0), F(-0x0p+0)], [F(0), F(0x0p+0)],
+            [F(0.1), F(0x1.8663f793c46c69cp-4)], [F(0.25), F(0x1.c8ff7c79a9a21ac4p-3)],
+            [F(0.75), F(0x1.1e85f5e7040d03ep-1)], [F(0.875), F(0x1.41d8fe84672ae646p-1)],
+            [F(10), F(0x1.32ee3b77f374bb7cp+1)], [F(100), F(0x1.275e2271bba30be4p+2)],
+            [F(10000), F(0x1.26bbed6fbd84182ep+3)],
+        ];
+        testLog1p(vals);
+    }}
+    {
+        float[2][16] vals = [
+            [float.nan, float.nan],[-float.nan, float.nan],
+            [float.infinity, float.infinity], [-float.infinity, float.nan],
+            [float.min_normal, 0x1p-126f], [-float.min_normal, -0x1p-126f],
+            [float.max, 0x1.62e43p+6f], [-float.max, float.nan],
+            [float.min_normal / 2, 0x0.8p-126f], [-float.min_normal / 2, -0x0.8p-126f],
+            [float.max / 2, 0x1.601e68p+6f], [-float.max / 2, float.nan],
+            [float.min_normal / 3, 0x0.555556p-126f], [-float.min_normal / 3, -0x0.555556p-126f],
+            [float.max / 3, 0x1.5e7f36p+6f], [-float.max / 3, float.nan],
+        ];
+        testLog1p(vals);
+    }
+    {
+        double[2][16] vals = [
+            [double.nan, double.nan],[-double.nan, double.nan],
+            [double.infinity, double.infinity], [-double.infinity, double.nan],
+            [double.min_normal, 0x1p-1022], [-double.min_normal, -0x1p-1022],
+            [double.max, 0x1.62e42fefa39efp+9], [-double.max, double.nan],
+            [double.min_normal / 2, 0x0.8p-1022], [-double.min_normal / 2, -0x0.8p-1022],
+            [double.max / 2, 0x1.628b76e3a7b61p+9], [-double.max / 2, double.nan],
+            [double.min_normal / 3, 0x0.5555555555555p-1022], [-double.min_normal / 3, -0x0.5555555555555p-1022],
+            [double.max / 3, 0x1.6257909bce36ep+9], [-double.max / 3, double.nan],
+        ];
+        testLog1p(vals);
+    }
+    alias F = floatTraits!real;
+    static if (F.realFormat == RealFormat.ieeeExtended || F.realFormat == RealFormat.ieeeQuadruple)
+    {{
+        real[2][16] vals = [
+            [real.nan, real.nan],[-real.nan, real.nan],
+            [real.infinity, real.infinity], [-real.infinity, real.nan],
+            [real.min_normal, 0x1p-16382L], [-real.min_normal, -0x1p-16382L],
+            [real.max, 0x1.62e42fefa39ef358p+13L], [-real.max, real.nan],
+            [real.min_normal / 2, 0x0.8p-16382L], [-real.min_normal / 2, -0x0.8p-16382L],
+            [real.max / 2, 0x1.62dea45ee3e064dcp+13L], [-real.max / 2, real.nan],
+            [real.min_normal / 3, 0x0.5555555555555556p-16382L], [-real.min_normal / 3, -0x0.5555555555555556p-16382L],
+            [real.max / 3, 0x1.62db65fa664871d2p+13L], [-real.max / 3, real.nan],
+        ];
+        testLog1p(vals);
+    }}
 }
 
 /***************************************
@@ -3564,7 +3885,7 @@ private T log2Impl(T)(T x) @safe pure nothrow @nogc
     import std.math.traits : isNaN, isInfinity, signbit;
     import std.math.constants : SQRT1_2, LOG2E;
     import std.math.algebraic : poly;
-    import std.math : floatTraits, RealFormat;
+    import std.math.traits : floatTraits, RealFormat;
 
     alias coeffs = LogCoeffs!T;
     alias F = floatTraits!T;
@@ -3641,6 +3962,87 @@ Ldone:
     z += exp;
 
     return z;
+}
+
+@safe @nogc nothrow unittest
+{
+    import std.math.traits : floatTraits, RealFormat;
+    import std.meta : AliasSeq;
+
+    static void testLog2(T)(T[2][] vals)
+    {
+        import std.math.operations : isClose;
+        import std.math.traits : isNaN;
+        foreach (ref pair; vals)
+        {
+            if (isNaN(pair[1]))
+                assert(isNaN(log2(pair[0])));
+            else
+                assert(isClose(log2(pair[0]), pair[1]));
+        }
+    }
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        scope F[2][] vals = [
+            [F(1), F(0x0p+0)], [F(2), F(0x1p+0)],
+            [F(4), F(0x1p+1)], [F(8), F(0x1.8p+1)],
+            [F(16), F(0x1p+2)], [F(32), F(0x1.4p+2)],
+            [F(64), F(0x1.8p+2)], [F(128), F(0x1.cp+2)],
+            [F(256), F(0x1p+3)], [F(512), F(0x1.2p+3)],
+            [F(1024), F(0x1.4p+3)], [F(2048), F(0x1.6p+3)],
+            [F(3), F(0x1.95c01a39fbd687ap+0)], [F(5), F(0x1.2934f0979a3715fcp+1)],
+            [F(7), F(0x1.675767f54042cd9ap+1)], [F(15), F(0x1.f414fdb4982259ccp+1)],
+            [F(17), F(0x1.0598fdbeb244c5ap+2)], [F(31), F(0x1.3d118d66c4d4e554p+2)],
+            [F(33), F(0x1.42d75a6eb1dfb0e6p+2)], [F(63), F(0x1.7e8bc1179e0caa9cp+2)],
+            [F(65), F(0x1.816e79685c2d2298p+2)], [F(-0), -F.infinity], [F(0), -F.infinity],
+            [F(0.1), F(-0x1.a934f0979a3715fcp+1)], [F(0.25), F(-0x1p+1)],
+            [F(0.75), F(-0x1.a8ff971810a5e182p-2)], [F(0.875), F(-0x1.8a8980abfbd32668p-3)],
+            [F(10), F(0x1.a934f0979a3715fcp+1)], [F(100), F(0x1.a934f0979a3715fcp+2)],
+            [F(10000), F(0x1.a934f0979a3715fcp+3)],
+        ];
+        testLog2(vals);
+    }}
+    {
+        float[2][16] vals = [
+            [float.nan, float.nan],[-float.nan, float.nan],
+            [float.infinity, float.infinity], [-float.infinity, float.nan],
+            [float.min_normal, -0x1.f8p+6f], [-float.min_normal, float.nan],
+            [float.max, 0x1p+7f], [-float.max, float.nan],
+            [float.min_normal / 2, -0x1.fcp+6f], [-float.min_normal / 2, float.nan],
+            [float.max / 2, 0x1.fcp+6f], [-float.max / 2, float.nan],
+            [float.min_normal / 3, -0x1.fe57p+6f], [-float.min_normal / 3, float.nan],
+            [float.max / 3, 0x1.f9a9p+6f], [-float.max / 3, float.nan],
+        ];
+        testLog2(vals);
+    }
+    {
+        double[2][16] vals = [
+            [double.nan, double.nan],[-double.nan, double.nan],
+            [double.infinity, double.infinity], [-double.infinity, double.nan],
+            [double.min_normal, -0x1.ffp+9], [-double.min_normal, double.nan],
+            [double.max, 0x1p+10], [-double.max, double.nan],
+            [double.min_normal / 2, -0x1.ff8p+9], [-double.min_normal / 2, double.nan],
+            [double.max / 2, 0x1.ff8p+9], [-double.max / 2, double.nan],
+            [double.min_normal / 3, -0x1.ffcae00d1cfdfp+9], [-double.min_normal / 3, double.nan],
+            [double.max / 3, 0x1.ff351ff2e3021p+9], [-double.max / 3, double.nan],
+        ];
+        testLog2(vals);
+    }
+    alias F = floatTraits!real;
+    static if (F.realFormat == RealFormat.ieeeExtended || F.realFormat == RealFormat.ieeeQuadruple)
+    {{
+        real[2][16] vals = [
+            [real.nan, real.nan],[-real.nan, real.nan],
+            [real.infinity, real.infinity], [-real.infinity, real.nan],
+            [real.min_normal, -0x1.fffp+13L], [-real.min_normal, real.nan],
+            [real.max, 0x1p+14L], [-real.max, real.nan],
+            [real.min_normal / 2, -0x1.fff8p+13L], [-real.min_normal / 2, real.nan],
+            [real.max / 2, 0x1.fff8p+13L], [-real.max / 2, real.nan],
+            [real.min_normal / 3, -0x1.fffcae00d1cfdeb4p+13L], [-real.min_normal / 3, real.nan],
+            [real.max / 3, 0x1.fff351ff2e30214cp+13L], [-real.max / 3, real.nan],
+        ];
+        testLog2(vals);
+    }}
 }
 
 /*****************************************
@@ -3760,6 +4162,87 @@ private T logbImpl(T)(T x) @trusted pure nothrow @nogc
         return -1 / (x * x);
 
     return ilogb(x);
+}
+
+@safe @nogc nothrow unittest
+{
+    import std.math.traits : floatTraits, RealFormat;
+    import std.meta : AliasSeq;
+
+    static void testLogb(T)(T[2][] vals)
+    {
+        import std.math.operations : isClose;
+        import std.math.traits : isNaN;
+        foreach (ref pair; vals)
+        {
+            if (isNaN(pair[1]))
+                assert(isNaN(logb(pair[0])));
+            else
+                assert(isClose(logb(pair[0]), pair[1]));
+        }
+    }
+    static foreach (F; AliasSeq!(float, double, real))
+    {{
+        scope F[2][] vals = [
+            [F(1), F(0x0p+0)], [F(2), F(0x1p+0)],
+            [F(4), F(0x1p+1)], [F(8), F(0x1.8p+1)],
+            [F(16), F(0x1p+2)], [F(32), F(0x1.4p+2)],
+            [F(64), F(0x1.8p+2)], [F(128), F(0x1.cp+2)],
+            [F(256), F(0x1p+3)], [F(512), F(0x1.2p+3)],
+            [F(1024), F(0x1.4p+3)], [F(2048), F(0x1.6p+3)],
+            [F(3), F(0x1p+0)], [F(5), F(0x1p+1)],
+            [F(7), F(0x1p+1)], [F(15), F(0x1.8p+1)],
+            [F(17), F(0x1p+2)], [F(31), F(0x1p+2)],
+            [F(33), F(0x1.4p+2)], [F(63), F(0x1.4p+2)],
+            [F(65), F(0x1.8p+2)], [F(-0), -F.infinity], [F(0), -F.infinity],
+            [F(0.1), F(-0x1p+2)], [F(0.25), F(-0x1p+1)],
+            [F(0.75), F(-0x1p+0)], [F(0.875), F(-0x1p+0)],
+            [F(10), F(0x1.8p+1)], [F(100), F(0x1.8p+2)],
+            [F(10000), F(0x1.ap+3)],
+        ];
+        testLogb(vals);
+    }}
+    {
+        float[2][16] vals = [
+            [float.nan, float.nan],[-float.nan, float.nan],
+            [float.infinity, float.infinity], [-float.infinity, float.infinity],
+            [float.min_normal, -0x1.f8p+6f], [-float.min_normal, -0x1.f8p+6f],
+            [float.max, 0x1.fcp+6f], [-float.max, 0x1.fcp+6f],
+            [float.min_normal / 2, -0x1.fcp+6f], [-float.min_normal / 2, -0x1.fcp+6f],
+            [float.max / 2, 0x1.f8p+6f], [-float.max / 2, 0x1.f8p+6f],
+            [float.min_normal / 3, -0x1p+7f], [-float.min_normal / 3, -0x1p+7f],
+            [float.max / 3, 0x1.f8p+6f], [-float.max / 3, 0x1.f8p+6f],
+        ];
+        testLogb(vals);
+    }
+    {
+        double[2][16] vals = [
+            [double.nan, double.nan],[-double.nan, double.nan],
+            [double.infinity, double.infinity], [-double.infinity, double.infinity],
+            [double.min_normal, -0x1.ffp+9], [-double.min_normal, -0x1.ffp+9],
+            [double.max, 0x1.ff8p+9], [-double.max, 0x1.ff8p+9],
+            [double.min_normal / 2, -0x1.ff8p+9], [-double.min_normal / 2, -0x1.ff8p+9],
+            [double.max / 2, 0x1.ffp+9], [-double.max / 2, 0x1.ffp+9],
+            [double.min_normal / 3, -0x1p+10], [-double.min_normal / 3, -0x1p+10],
+            [double.max / 3, 0x1.ffp+9], [-double.max / 3, 0x1.ffp+9],
+        ];
+        testLogb(vals);
+    }
+    alias F = floatTraits!real;
+    static if (F.realFormat == RealFormat.ieeeExtended || F.realFormat == RealFormat.ieeeQuadruple)
+    {{
+        real[2][16] vals = [
+            [real.nan, real.nan],[-real.nan, real.nan],
+            [real.infinity, real.infinity], [-real.infinity, real.infinity],
+            [real.min_normal, -0x1.fffp+13L], [-real.min_normal, -0x1.fffp+13L],
+            [real.max, 0x1.fff8p+13L], [-real.max, 0x1.fff8p+13L],
+            [real.min_normal / 2, -0x1.fff8p+13L], [-real.min_normal / 2, -0x1.fff8p+13L],
+            [real.max / 2, 0x1.fffp+13L], [-real.max / 2, 0x1.fffp+13L],
+            [real.min_normal / 3, -0x1p+14L], [-real.min_normal / 3, -0x1p+14L],
+            [real.max / 3, 0x1.fffp+13L], [-real.max / 3, 0x1.fffp+13L],
+        ];
+        testLogb(vals);
+    }}
 }
 
 /*************************************
